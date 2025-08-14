@@ -185,7 +185,7 @@ const loginUser = async (req, res) => {
       });
     }
 
-    // Generate JWT token with appropriate expiration
+    // Generate JWT token
     const tokenPayload = {
       id: checkUser._id,
       role: checkUser.role,
@@ -199,15 +199,6 @@ const loginUser = async (req, res) => {
       audience: "darziescouture-users"
     });
 
-    // Optimized cookie options
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      path: "/"
-    };
-
     const userResponse = {
       email: checkUser.email,
       role: checkUser.role,
@@ -215,10 +206,14 @@ const loginUser = async (req, res) => {
       userName: checkUser.userName,
     };
 
-    res.cookie("token", token, cookieOptions).json({
+    console.log("✅ Login successful for:", userResponse.userName);
+
+    // Return token in response body (no cookies)
+    res.json({
       success: true,
       message: "Logged in successfully",
       user: userResponse,
+      token: token
     });
   } catch (e) {
     console.error("Login error:", e);
@@ -229,17 +224,12 @@ const loginUser = async (req, res) => {
   }
 };
 
+
 // Logout user with proper cleanup
 const logoutUser = (req, res) => {
   try {
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      path: "/"
-    };
-
-    res.clearCookie("token", cookieOptions).json({
+    // 🔥 No cookie clearing needed
+    res.json({
       success: true,
       message: "Logged out successfully!",
     });
@@ -301,7 +291,12 @@ const authMiddleware = async (req, res, next) => {
 // Optimized auth status check
 const checkAuthStatusMiddleware = async (req, res, next) => {
   try {
-    const token = req.cookies.token;
+    // 🔥 Check Authorization header instead of cookies
+    let token = null;
+
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+      token = req.headers.authorization.substring(7);
+    }
 
     if (!token) {
       req.user = null;
@@ -313,17 +308,11 @@ const checkAuthStatusMiddleware = async (req, res, next) => {
       audience: "darziescouture-users"
     });
 
-    // Check cache first for user verification
+    // Check cache first
     let user = getCachedUser(decoded.email);
-
     if (!user) {
-      user = await User.findById(decoded.id)
-        .lean()
-        .select('userName email role');
-
-      if (user) {
-        setCachedUser(user.email, user);
-      }
+      user = await User.findById(decoded.id).lean().select('userName email role');
+      if (user) setCachedUser(user.email, user);
     }
 
     if (!user) {
