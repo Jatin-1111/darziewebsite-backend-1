@@ -1,4 +1,3 @@
-// server.js - FIXED VERSION with compatible MongoDB connection
 require('dotenv').config({ path: './.env' });
 
 const express = require("express");
