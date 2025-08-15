@@ -1,36 +1,52 @@
-// controllers/auth/auth-controller.js - ULTRA OPTIMIZED VERSION
+// controllers/auth/auth-controller.js - FIXED BACKEND VERSION
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../../models/User");
 
-// User cache for auth operations
+// Simple user cache for performance
 const userCache = new Map();
 const USER_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
-function getCachedUser(email) {
-  const item = userCache.get(email);
+function getCachedUser(identifier) {
+  const item = userCache.get(identifier);
   if (item && Date.now() < item.expiry) {
     return item.data;
   }
-  userCache.delete(email);
+  userCache.delete(identifier);
   return null;
 }
 
-function setCachedUser(email, user) {
-  userCache.set(email, {
+function setCachedUser(identifier, user) {
+  userCache.set(identifier, {
     data: user,
     expiry: Date.now() + USER_CACHE_TTL
   });
 }
 
-function clearUserFromCache(email) {
-  userCache.delete(email);
+// ✅ Helper function to generate JWT tokens
+function generateJWT(user) {
+  const payload = {
+    id: user._id,
+    email: user.email,
+    userName: user.userName,
+    role: user.role,
+  };
+
+  return jwt.sign(payload, process.env.JWT_SECRET, {
+    expiresIn: "7d",
+    issuer: "darziescouture",
+    audience: "darziescouture-users"
+  });
 }
 
-// Optimized password hashing with appropriate salt rounds
-const SALT_ROUNDS = 12;
+// ✅ Helper function to verify JWT tokens
+function verifyJWT(token) {
+  return jwt.verify(token, process.env.JWT_SECRET, {
+    issuer: "darziescouture",
+    audience: "darziescouture-users"
+  });
+}
 
-// Register user with validation and optimization
 const registerUser = async (req, res) => {
   try {
     const { userName, email, password } = req.body;
@@ -60,32 +76,24 @@ const registerUser = async (req, res) => {
       });
     }
 
-    // Username validation
-    if (userName.length < 2) {
-      return res.status(400).json({
-        success: false,
-        message: "Username must be at least 2 characters long",
-      });
-    }
-
-    // Check if user already exists with optimized query
-    const checkUser = await User.findOne({
+    // Check if user already exists
+    const existingUser = await User.findOne({
       $or: [
         { email: email.toLowerCase() },
         { userName: userName.trim() }
       ]
     }).lean().select('email userName');
 
-    if (checkUser) {
-      const conflictField = checkUser.email === email.toLowerCase() ? 'email' : 'username';
+    if (existingUser) {
+      const conflictField = existingUser.email === email.toLowerCase() ? 'email' : 'username';
       return res.status(409).json({
         success: false,
         message: `User with this ${conflictField} already exists`,
       });
     }
 
-    // Hash password asynchronously
-    const hashPassword = await bcrypt.hash(password, SALT_ROUNDS);
+    // Hash password
+    const hashPassword = await bcrypt.hash(password, 12);
 
     const newUser = new User({
       userName: userName.trim(),
@@ -93,33 +101,14 @@ const registerUser = async (req, res) => {
       password: hashPassword,
     });
 
-    const savedUser = await newUser.save();
-
-    // Cache the new user (without password)
-    const userForCache = {
-      _id: savedUser._id,
-      userName: savedUser.userName,
-      email: savedUser.email,
-      role: savedUser.role
-    };
-    setCachedUser(savedUser.email, userForCache);
+    await newUser.save();
 
     res.status(201).json({
       success: true,
       message: "Registration successful! You can now log in.",
     });
-  } catch (e) {
-    console.error("Registration error:", e);
-
-    // Handle MongoDB duplicate key errors
-    if (e.code === 11000) {
-      const field = Object.keys(e.keyPattern)[0];
-      return res.status(409).json({
-        success: false,
-        message: `${field} already exists`,
-      });
-    }
-
+  } catch (error) {
+    console.error("Registration error:", error);
     res.status(500).json({
       success: false,
       message: "Registration failed. Please try again.",
@@ -127,7 +116,6 @@ const registerUser = async (req, res) => {
   }
 };
 
-// Login user with caching and optimization
 const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -142,33 +130,35 @@ const loginUser = async (req, res) => {
 
     const normalizedEmail = email.toLowerCase();
 
-    // Check cache first
-    let checkUser = getCachedUser(normalizedEmail);
+    // Check cache first (without password)
+    let cachedUser = getCachedUser(normalizedEmail);
+    let user;
 
-    // If not in cache, fetch from database
-    if (!checkUser) {
-      checkUser = await User.findOne({ email: normalizedEmail })
+    if (cachedUser) {
+      // Get password separately for cached user
+      const userWithPassword = await User.findById(cachedUser._id)
+        .lean()
+        .select('password');
+
+      user = { ...cachedUser, password: userWithPassword.password };
+    } else {
+      // Fetch from database
+      user = await User.findOne({ email: normalizedEmail })
         .lean()
         .select('userName email password role');
 
-      if (checkUser) {
-        // Cache user (without password for future cache hits)
+      if (user) {
+        // Cache user (without password)
         setCachedUser(normalizedEmail, {
-          _id: checkUser._id,
-          userName: checkUser.userName,
-          email: checkUser.email,
-          role: checkUser.role
+          _id: user._id,
+          userName: user.userName,
+          email: user.email,
+          role: user.role
         });
       }
-    } else {
-      // If from cache, we need to fetch password separately
-      const userWithPassword = await User.findById(checkUser._id)
-        .lean()
-        .select('password');
-      checkUser.password = userWithPassword.password;
     }
 
-    if (!checkUser) {
+    if (!user) {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
@@ -176,9 +166,9 @@ const loginUser = async (req, res) => {
     }
 
     // Verify password
-    const checkPasswordMatch = await bcrypt.compare(password, checkUser.password);
+    const isPasswordValid = await bcrypt.compare(password, user.password);
 
-    if (!checkPasswordMatch) {
+    if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
@@ -186,37 +176,26 @@ const loginUser = async (req, res) => {
     }
 
     // Generate JWT token
-    const tokenPayload = {
-      id: checkUser._id,
-      role: checkUser.role,
-      email: checkUser.email,
-      userName: checkUser.userName,
-    };
-
-    const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
-      expiresIn: "7d",
-      issuer: "darziescouture",
-      audience: "darziescouture-users"
-    });
+    const token = generateJWT(user);
 
     const userResponse = {
-      email: checkUser.email,
-      role: checkUser.role,
-      id: checkUser._id,
-      userName: checkUser.userName,
+      email: user.email,
+      role: user.role,
+      id: user._id,
+      userName: user.userName,
     };
 
     console.log("✅ Login successful for:", userResponse.userName);
 
-    // Return token in response body (no cookies)
+    // ✅ Return token in response body (no cookies needed)
     res.json({
       success: true,
       message: "Logged in successfully",
       user: userResponse,
       token: token
     });
-  } catch (e) {
-    console.error("Login error:", e);
+  } catch (error) {
+    console.error("Login error:", error);
     res.status(500).json({
       success: false,
       message: "Login failed. Please try again.",
@@ -224,17 +203,16 @@ const loginUser = async (req, res) => {
   }
 };
 
-
-// Logout user with proper cleanup
 const logoutUser = (req, res) => {
   try {
-    // 🔥 No cookie clearing needed
+    // For JWT logout, we just need to respond successfully
+    // The frontend will handle token removal
     res.json({
       success: true,
       message: "Logged out successfully!",
     });
-  } catch (e) {
-    console.error("Logout error:", e);
+  } catch (error) {
+    console.error("Logout error:", error);
     res.status(500).json({
       success: false,
       message: "Logout failed",
@@ -242,10 +220,15 @@ const logoutUser = (req, res) => {
   }
 };
 
-// Optimized auth middleware
+// ✅ FIXED: Middleware to check Authorization header instead of cookies
 const authMiddleware = async (req, res, next) => {
   try {
-    const token = req.cookies.token;
+    let token = null;
+
+    // Check Authorization header
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+      token = req.headers.authorization.substring(7);
+    }
 
     if (!token) {
       return res.status(401).json({
@@ -254,12 +237,9 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
-      issuer: "darziescouture",
-      audience: "darziescouture-users"
-    });
+    const decoded = verifyJWT(token);
 
-    // Check if user still exists (security measure)
+    // Check if user still exists
     const user = await User.findById(decoded.id).lean().select('userName email role');
 
     if (!user) {
@@ -288,12 +268,12 @@ const authMiddleware = async (req, res, next) => {
   }
 };
 
-// Optimized auth status check
+// ✅ FIXED: Check auth status for frontend
 const checkAuthStatusMiddleware = async (req, res, next) => {
   try {
-    // 🔥 Check Authorization header instead of cookies
     let token = null;
 
+    // Check Authorization header
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
       token = req.headers.authorization.substring(7);
     }
@@ -303,10 +283,7 @@ const checkAuthStatusMiddleware = async (req, res, next) => {
       return next();
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
-      issuer: "darziescouture",
-      audience: "darziescouture-users"
-    });
+    const decoded = verifyJWT(token);
 
     // Check cache first
     let user = getCachedUser(decoded.email);
@@ -329,7 +306,7 @@ const checkAuthStatusMiddleware = async (req, res, next) => {
   }
 };
 
-// Clean up expired cache entries every 15 minutes
+// Clean up expired cache entries
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of userCache.entries()) {

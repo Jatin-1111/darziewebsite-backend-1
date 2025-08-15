@@ -1,7 +1,7 @@
 // controllers/shop/cart-controller.js - FIXED VERSION
 const Cart = require("../../models/Cart");
 const Product = require("../../models/Product");
-const { ObjectId } = require('mongoose').Types; // ✅ Import ObjectId at the top
+const { ObjectId } = require('mongoose').Types;
 
 // Simple in-memory cache for cart data
 const cartCache = new Map();
@@ -27,9 +27,27 @@ function clearCachedCart(userId) {
   cartCache.delete(userId);
 }
 
-// ✅ Unified cart data function - use this for ALL operations
+// ✅ FIXED: Added proper validation for ObjectIds
+function isValidObjectId(id) {
+  return id && ObjectId.isValid(id) && String(new ObjectId(id)) === String(id);
+}
+
+// ✅ FIXED: Better error handling and validation
 async function getOptimizedCartData(userId) {
   try {
+    // Validate userId
+    if (!userId || !isValidObjectId(userId)) {
+      console.warn('Invalid userId provided to getOptimizedCartData:', userId);
+      return {
+        _id: null,
+        userId: userId || null,
+        items: [],
+        cartTotal: 0,
+        itemCount: 0,
+        totalQuantity: 0
+      };
+    }
+
     // Handle both userId string and cart object
     let cart;
     if (typeof userId === 'string') {
@@ -51,9 +69,24 @@ async function getOptimizedCartData(userId) {
       };
     }
 
+    // ✅ FIXED: Validate product IDs before querying
+    const validProductIds = cart.items
+      .map(item => item.productId)
+      .filter(productId => isValidObjectId(productId));
+
+    if (validProductIds.length === 0) {
+      return {
+        _id: cart._id,
+        userId: cart.userId,
+        items: [],
+        cartTotal: 0,
+        itemCount: 0,
+        totalQuantity: 0
+      };
+    }
+
     // Get all product IDs and fetch in one query
-    const productIds = cart.items.map(item => item.productId);
-    const products = await Product.find({ _id: { $in: productIds } })
+    const products = await Product.find({ _id: { $in: validProductIds } })
       .lean()
       .select('title price salePrice image totalStock');
 
@@ -66,8 +99,17 @@ async function getOptimizedCartData(userId) {
     // Build cart items with product data
     const populatedCartItems = cart.items
       .map((item) => {
+        // ✅ FIXED: Validate item.productId before using
+        if (!item.productId || !isValidObjectId(item.productId)) {
+          console.warn('Invalid productId in cart item:', item.productId);
+          return null;
+        }
+
         const product = productMap.get(item.productId.toString());
-        if (!product) return null; // Product might be deleted
+        if (!product) {
+          console.warn('Product not found for ID:', item.productId);
+          return null; // Product might be deleted
+        }
 
         const effectivePrice = product.salePrice > 0 ? product.salePrice : product.price;
         const itemTotal = effectivePrice * item.quantity;
@@ -114,7 +156,7 @@ const addToCart = async (req, res) => {
   try {
     const { userId, productId, quantity } = req.body;
 
-    // Input validation
+    // ✅ FIXED: Validate inputs
     if (!userId || !productId || quantity <= 0) {
       return res.status(400).json({
         success: false,
@@ -122,9 +164,16 @@ const addToCart = async (req, res) => {
       });
     }
 
+    if (!isValidObjectId(userId) || !isValidObjectId(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID or product ID format",
+      });
+    }
+
     clearCachedCart(userId);
 
-    // ✅ Simple product check instead of complex aggregation
+    // Simple product check
     const product = await Product.findById(productId)
       .lean()
       .select('title price salePrice totalStock image');
@@ -176,7 +225,7 @@ const addToCart = async (req, res) => {
 
     await cart.save();
 
-    // ✅ Use consistent function for all operations
+    // Use consistent function for all operations
     const cartData = await getOptimizedCartData(userId);
     setCachedCart(userId, cartData);
 
@@ -205,6 +254,14 @@ const fetchCartItems = async (req, res) => {
       });
     }
 
+    // ✅ FIXED: Validate userId format
+    if (!isValidObjectId(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID format",
+      });
+    }
+
     // Check cache first
     const cachedCart = getCachedCart(userId);
     if (cachedCart) {
@@ -215,7 +272,7 @@ const fetchCartItems = async (req, res) => {
       });
     }
 
-    // ✅ Use consistent function - pass userId string
+    // Use consistent function - pass userId string
     const cartData = await getOptimizedCartData(userId);
     setCachedCart(userId, cartData);
 
@@ -240,6 +297,14 @@ const updateCartItemQty = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Invalid data provided!",
+      });
+    }
+
+    // ✅ FIXED: Validate ObjectIds
+    if (!isValidObjectId(userId) || !isValidObjectId(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID or product ID format",
       });
     }
 
@@ -287,7 +352,7 @@ const updateCartItemQty = async (req, res) => {
     cart.items[findCurrentProductIndex].quantity = quantity;
     await cart.save();
 
-    // ✅ Use consistent function
+    // Use consistent function
     const cartData = await getOptimizedCartData(userId);
     setCachedCart(userId, cartData);
 
@@ -312,6 +377,14 @@ const deleteCartItem = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Invalid data provided!",
+      });
+    }
+
+    // ✅ FIXED: Validate ObjectIds
+    if (!isValidObjectId(userId) || !isValidObjectId(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID or product ID format",
       });
     }
 
@@ -342,7 +415,7 @@ const deleteCartItem = async (req, res) => {
 
     await cart.save();
 
-    // ✅ Use consistent function
+    // Use consistent function
     const cartData = await getOptimizedCartData(userId);
     setCachedCart(userId, cartData);
 
