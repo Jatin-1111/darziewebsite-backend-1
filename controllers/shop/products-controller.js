@@ -324,21 +324,7 @@ const getProductDetails = async (req, res) => {
       });
     }
 
-    // Check cache first
-    const cacheKey = `product_${id}`;
-    const cachedProduct = getFromCache(cacheKey);
-
-    if (cachedProduct) {
-      return res.status(200).json({
-        success: true,
-        data: cachedProduct,
-        fromCache: true
-      });
-    }
-
-    const product = await Product.findById(id)
-      .lean()
-      .select('title description category price salePrice totalStock averageReview image');
+    const product = await Product.findById(id).lean();
 
     if (!product) {
       return res.status(404).json({
@@ -347,15 +333,23 @@ const getProductDetails = async (req, res) => {
       });
     }
 
-    // Transform image for frontend compatibility
-    let imageUrl = product.image;
-    if (Array.isArray(product.image)) {
-      imageUrl = product.image.length > 0 ? product.image[0] : '';
-    }
-
+    // ✅ CRITICAL FIX: Ensure image is always an array
     const transformedProduct = {
       ...product,
-      image: imageUrl,
+      image: (() => {
+        // If already an array, return as-is (filtered)
+        if (Array.isArray(product.image)) {
+          return product.image.filter(img => img && img.trim() !== '');
+        }
+
+        // If string, convert to array
+        if (typeof product.image === 'string' && product.image.trim() !== '') {
+          return [product.image.trim()];
+        }
+
+        // Default to empty array
+        return [];
+      })(),
       effectivePrice: product.salePrice > 0 ? product.salePrice : product.price,
       stockStatus: product.totalStock === 0 ? 'out_of_stock' :
         product.totalStock < 10 ? 'low_stock' : 'in_stock',
@@ -363,8 +357,11 @@ const getProductDetails = async (req, res) => {
         Math.round(((product.price - product.salePrice) / product.price) * 100) : 0
     };
 
-    // Cache the result
-    setCache(cacheKey, transformedProduct);
+    console.log("🔍 Product Details API Response:", {
+      originalImage: product.image,
+      transformedImage: transformedProduct.image,
+      isArray: Array.isArray(transformedProduct.image)
+    });
 
     res.status(200).json({
       success: true,
