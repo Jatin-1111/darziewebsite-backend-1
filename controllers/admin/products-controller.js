@@ -1,4 +1,4 @@
-// controllers/admin/products-controller.js - OPTIMIZED VERSION (Safe Upgrade)
+// controllers/admin/products-controller.js - UPDATED FOR MULTI-IMAGE SUPPORT 🔥
 const { imageUploadUtil, bufferToDataURI } = require("../../helpers/cloudinary");
 const Product = require("../../models/Product");
 
@@ -34,23 +34,72 @@ function clearProductCache() {
   }
 }
 
+// ✅ UNIFIED: Handle both single and multiple image uploads
 const handleImageUpload = async (req, res) => {
   try {
-    if (!req.file) {
+    // Check for both single file and multiple files
+    const files = req.files || (req.file ? [req.file] : []);
+
+    if (files.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "No file uploaded"
+        message: "No files uploaded"
       });
     }
 
-    const dataURI = bufferToDataURI(req.file.mimetype, req.file.buffer);
-    const imageUrl = await imageUploadUtil(dataURI);
+    if (files.length > 5) {
+      return res.status(400).json({
+        success: false,
+        message: "Maximum 5 images allowed"
+      });
+    }
 
-    res.json({
-      success: true,
-      imageUrl,
-      message: "Image uploaded successfully"
+    // Validate each file
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    const maxSize = 10 * 1024 * 1024; // 10MB
+
+    for (const file of files) {
+      if (!allowedTypes.includes(file.mimetype)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid file type for ${file.originalname}. Please upload JPEG, PNG, or WebP images.`
+        });
+      }
+
+      if (file.size > maxSize) {
+        return res.status(400).json({
+          success: false,
+          message: `File ${file.originalname} is too large. Please upload images smaller than 10MB.`
+        });
+      }
+    }
+
+    // Upload all images to Cloudinary
+    const uploadPromises = files.map(async (file) => {
+      const dataURI = bufferToDataURI(file.mimetype, file.buffer);
+      return await imageUploadUtil(dataURI);
     });
+
+    const imageUrls = await Promise.all(uploadPromises);
+
+    // Return response based on single vs multiple
+    if (files.length === 1) {
+      // Single image response (backward compatibility)
+      res.json({
+        success: true,
+        imageUrl: imageUrls[0],
+        message: "Image uploaded successfully"
+      });
+    } else {
+      // Multiple images response
+      res.json({
+        success: true,
+        imageUrls,
+        imageUrl: imageUrls[0], // For backward compatibility
+        count: imageUrls.length,
+        message: `${imageUrls.length} images uploaded successfully`
+      });
+    }
   } catch (error) {
     console.error("Image upload error:", error);
     res.status(500).json({
@@ -63,7 +112,7 @@ const handleImageUpload = async (req, res) => {
 const addProduct = async (req, res) => {
   try {
     let {
-      image,
+      image, // ✅ Now expecting array of image URLs
       title,
       description,
       category,
@@ -81,14 +130,50 @@ const addProduct = async (req, res) => {
       });
     }
 
+    // ✅ ENHANCED: Handle multiple images
+    let productImages = [];
+
+    // If images are provided in the request body (from frontend)
+    if (image) {
+      if (Array.isArray(image)) {
+        productImages = image.filter(img => img && img.trim() !== '');
+      } else if (typeof image === 'string' && image.trim() !== '') {
+        productImages = [image.trim()];
+      }
+    }
+
+    // If files are uploaded directly (fallback for form uploads)
+    if (req.files && req.files.length > 0) {
+      const uploadPromises = req.files.map(async (file) => {
+        const dataURI = bufferToDataURI(file.mimetype, file.buffer);
+        return await imageUploadUtil(dataURI);
+      });
+      const uploadedUrls = await Promise.all(uploadPromises);
+      productImages = [...productImages, ...uploadedUrls];
+    }
+
+    // If single file upload (fallback)
     if (req.file) {
-      const b64 = req.file.buffer.toString("base64");
-      const dataURI = `data:${req.file.mimetype};base64,${b64}`;
-      image = await imageUploadUtil(dataURI);
+      const dataURI = bufferToDataURI(req.file.mimetype, req.file.buffer);
+      const uploadedUrl = await imageUploadUtil(dataURI);
+      productImages.push(uploadedUrl);
+    }
+
+    // Validate at least one image
+    if (productImages.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one product image is required",
+      });
+    }
+
+    // Limit to maximum 5 images
+    if (productImages.length > 5) {
+      productImages = productImages.slice(0, 5);
     }
 
     const newProduct = new Product({
-      image,
+      image: productImages, // ✅ Store as array
       title: title.trim(),
       description: description ? description.trim() : "",
       category: category.trim(),
@@ -106,7 +191,7 @@ const addProduct = async (req, res) => {
     res.status(201).json({
       success: true,
       data: newProduct,
-      message: "Product added successfully"
+      message: `Product added successfully with ${productImages.length} image(s)`
     });
   } catch (e) {
     console.error("Add Product Error:", e);
@@ -148,11 +233,23 @@ const fetchAllProducts = async (req, res) => {
         .select('title description category price salePrice totalStock averageReview image createdAt')
     ]);
 
-    // Transform image data for frontend
-    const transformedProducts = listOfProducts.map(product => ({
-      ...product,
-      image: Array.isArray(product.image) ? product.image[0] : product.image
-    }));
+    // ✅ ENHANCED: Transform image data to ensure consistency
+    const transformedProducts = listOfProducts.map(product => {
+      let imageArray = [];
+
+      if (Array.isArray(product.image)) {
+        imageArray = product.image.filter(img => img && img.trim() !== '');
+      } else if (product.image && typeof product.image === 'string') {
+        imageArray = [product.image];
+      }
+
+      return {
+        ...product,
+        image: imageArray, // Always return as array
+        imageCount: imageArray.length,
+        primaryImage: imageArray[0] || null // For backward compatibility
+      };
+    });
 
     const pagination = {
       currentPage: pageNum,
@@ -183,7 +280,7 @@ const editProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      image,
+      image, // ✅ Now expecting array of image URLs
       title,
       description,
       category,
@@ -208,7 +305,33 @@ const editProduct = async (req, res) => {
       });
     }
 
-    // Update only provided fields with validation
+    // ✅ ENHANCED: Handle image updates
+    if (image !== undefined) {
+      let productImages = [];
+
+      if (Array.isArray(image)) {
+        productImages = image.filter(img => img && img.trim() !== '');
+      } else if (typeof image === 'string' && image.trim() !== '') {
+        productImages = [image.trim()];
+      }
+
+      // Ensure at least one image
+      if (productImages.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "At least one product image is required",
+        });
+      }
+
+      // Limit to maximum 5 images
+      if (productImages.length > 5) {
+        productImages = productImages.slice(0, 5);
+      }
+
+      findProduct.image = productImages;
+    }
+
+    // Update other fields with validation
     if (title !== undefined) findProduct.title = title.trim() || findProduct.title;
     if (description !== undefined) findProduct.description = description ? description.trim() : findProduct.description;
     if (category !== undefined) findProduct.category = category.trim() || findProduct.category;
@@ -224,7 +347,6 @@ const editProduct = async (req, res) => {
       const numStock = parseInt(totalStock);
       if (!isNaN(numStock) && numStock >= 0) findProduct.totalStock = numStock;
     }
-    if (image !== undefined) findProduct.image = image || findProduct.image;
     if (averageReview !== undefined) {
       const numReview = parseFloat(averageReview);
       if (!isNaN(numReview) && numReview >= 0 && numReview <= 5) {
@@ -237,10 +359,17 @@ const editProduct = async (req, res) => {
     // Clear cache when product is updated
     clearProductCache();
 
+    // ✅ Transform response to match frontend expectations
+    const responseData = {
+      ...findProduct.toObject(),
+      imageCount: findProduct.image.length,
+      primaryImage: findProduct.image[0] || null
+    };
+
     res.status(200).json({
       success: true,
-      data: findProduct,
-      message: "Product updated successfully"
+      data: responseData,
+      message: `Product updated successfully with ${findProduct.image.length} image(s)`
     });
   } catch (e) {
     console.error("editProduct error:", e);
@@ -279,7 +408,8 @@ const deleteProduct = async (req, res) => {
       message: "Product deleted successfully",
       deletedProduct: {
         id: product._id,
-        title: product.title
+        title: product.title,
+        imageCount: Array.isArray(product.image) ? product.image.length : 1
       }
     });
   } catch (e) {
@@ -302,7 +432,7 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 module.exports = {
-  handleImageUpload,
+  handleImageUpload, // ✅ UNIFIED: Handles both single and multiple images
   addProduct,
   fetchAllProducts,
   editProduct,

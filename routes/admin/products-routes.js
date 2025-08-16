@@ -1,4 +1,4 @@
-// routes/admin/products-routes.js
+// routes/admin/products-routes.js - UNIFIED ROUTES FOR SINGLE/MULTIPLE IMAGES 🔥
 const express = require("express");
 const {
   handleImageUpload,
@@ -12,10 +12,10 @@ const { upload } = require("../../helpers/cloudinary");
 
 const router = express.Router();
 
-// Use upload middleware correctly
-router.post("/upload-image", upload.single("image"), handleImageUpload);
-router.post("/add", upload.single("image"), addProduct); // ✅ correct
-router.put("/edit/:id", editProduct);
+router.post("/upload-image", upload.any(), handleImageUpload);
+
+router.post("/add", upload.any(), addProduct);
+router.put("/edit/:id", upload.any(), editProduct);
 router.delete("/delete/:id", deleteProduct);
 router.get("/get", fetchAllProducts);
 
