@@ -98,12 +98,21 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Darzie\'s Couture API is running',
+    timestamp: new Date(),
+    environment: process.env.NODE_ENV || 'development',
+    mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+  });
+});
+
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    timestamp: new Date()
   });
 });
 
